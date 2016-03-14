@@ -1,0 +1,223 @@
+#!/usr/bin/python
+
+# 1\ run on slave. Done
+# 2\ run on primary. Done
+# 3\ run primary grants on slave
+# 4\ adminweb1 exceptions. DDL changes are only allowed from adminweb1
+# 5\ Add grants for nagios monitoring.
+# 6\ Run grants on single DBserver for all app servers
+# 7\ Run grant for specified APP servers on all db's or specified db server.
+
+from __future__ import print_function
+import time
+import paramiko
+import mysql.connector
+import sys, argparse
+paramiko.util.log_to_file('ssh.log')
+
+# Global data dictionary of "primary db server hostname" and "databases each server has"
+primarydbs = {
+            'db1':('testdb1','testdb2'),
+            'db3':('testdb3','testdb4'),
+            'db5':('testdb5','testdb6'),
+            'db7':('testdb7','testdb8'),
+            'db9':('testdb7','testdb8','library', 'sample'),
+            }
+# Global data dictionary of "slave db server hostname" and "databases each server has"
+slavedbs = {
+            'db2':('testdb1','testdb2'),
+            'db4':('testdb3','testdb4'),
+            'db6':('testdb5','testdb6'),
+            'db8':('testdb7','testdb8'),
+            'db10':('testdb7','testdb8','library','sample'),
+            }
+
+# primary-slave db pairs.
+dbpairs = {
+        'qpdb1':'qpdb2',
+        'scdb1':'scdb2',
+        'qpdb3':'qpdb4',
+        'qpdb5':'qpdb6',
+        'qpdb7':'qpdb8',
+        'qpdb9':'qpdb10',
+        'admindb1':'admindb2',
+        'sadb1':'sadb2',
+        'sadb3':'sadb4',
+        'sadb5':'sadb6',
+        'sadb7':'sadb8',
+        'sadb9':'sadb10',
+        }
+
+# Create a single dictionary of all db's, needed for applying grants for single app server to all db's.
+
+dbservers = dict(primarydbs) 
+dbservers.update(slavedbs)
+
+webservers = ['web1', 'web2', 'web3', 'web4', 'web5', 'web6' ]
+runservers = ['run1', 'run2', 'run3', 'run4', 'run5']
+apiservers = ['api1', 'api2']
+dataservers = ['data1', 'data2', 'data3', 'data4']
+
+arg_list = None
+allAppServers = webservers + runservers + apiservers + dataservers
+
+port = 25431
+sshusername = 'root'
+sshpassword = 'xxxx' # not a good idea, port it to passwordless ssh another time.
+ssh = paramiko.SSHClient()
+ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+ssh.load_system_host_keys()
+
+
+# Generate grant statements to be run on db's
+def grants(dbname, appser, dbhost, rGrants=False):
+
+    # We generally have a single dbuser and password, but some exceptions are there. If these exceptions go above 4, define a dbuser:password dictionary.
+    dbuser = 'xxxx'
+    dbpasswd = 'xxxxpw'
+
+    if dbname == 'library':
+        dbuser = "yyyyy"
+        dbpasswd = "yyyypw"
+
+    if dbname == 'sample':
+        dbuser = "zzzzz"
+        dbpasswd = "zzzzzpw"
+
+    # Only Admin app server has grants to do DDL changes.
+
+    if appser == 'admin1':
+        dbuser = "admin_xxxx"
+        dbpasswd = "admin_xxxxpw"
+
+    grant_stmt = ("grant all on {database}.* to {username}@{server} identified by '{password}';"
+                ).format(database=dbname, username=dbuser, server=appser, password=dbpasswd)
+
+    if (dbhost in slavedbs) and (not rGrants):
+        rvoke = "insert, update, delete, "
+    else:
+        rvoke = ""
+
+    if appser != 'adminweb1':
+        revoke_ddl = ("revoke " + rvoke + "drop, create, alter on {database}.* from {username}@{server};"
+                    ).format(database=dbname, username=dbuser, server=appser)
+    else:
+        revoke_ddl = ""
+
+    cmd = "mysql -e \"" + grant_stmt + revoke_ddl+ "\""
+
+    return(cmd)
+
+# Adds flush grants before applying new grants.
+def flush(dbserv):
+    f_stmt = "mysql -e \"flush privileges;"
+    sr_stmt = ("grant replication slave on *.* to repl@{server} identified by 'repl';"
+                ).format(server=dbserv)
+    p_stmt = ("grant select on mysql.* to nagios@rt;")
+    s_stmt = ("grant replication client on *.* to nagios@rt;\"")
+    flush_stmt = f_stmt + sr_stmt + p_stmt + s_stmt
+    
+    return flush_stmt
+
+# simple logging to file
+def printlog(log_entry):
+    logfile = open('grants.qp.log','a')
+    print(log_entry, file=logfile)
+    logfile.close()
+
+# executes the grant command on database servers
+def execute(server, command, quiet=True):
+    printlog("Executing :")
+    printlog("\t" + command)
+    printlog("On " + server)
+
+    # Set command variable to safe command, if you just want to test execution without changing grants. Something like ls, arch, etc. Uncomment below line
+    # command="hostname"
+    ssh.connect(server, port, username=sshusername, password=sshpassword)
+    printlog("----------------------------------------------------")
+    if quiet:
+        printlog("In QUIET MODE")
+    else:
+        ssh_stdin, ssh_stdout, ssh_stderr = ssh.exec_command(command)
+        printlog("Execution output:")
+        for op in ssh_stdout:
+            printlog(op)
+        printlog("Execution error:")
+        for operr in ssh_stderr:
+            printlog(operr)
+    ssh.close()
+    printlog("-------- Completed Execution -----------------------")
+
+
+def callgrants(dbser, gflush=False, appServers=allAppServers, rGrants=False):
+    for dbserv in dbser:
+        printlog("Running grants on " + dbserv + " at " + time.strftime("%c"))
+        printlog("====================================================")
+        if gflush:
+            cmd = flush(dbpairs[dbserv])
+            execute(dbserv, cmd)
+
+        for database in dbservers[dbserv]:
+            printlog(dbserv)
+            printlog(database)
+            for appser in appServers:
+                printlog(appser)
+                if rGrants:
+                    cmd = grants(database, appser, dbserv, rGrants)
+                    execute(dbserv, cmd)
+                else:
+                    cmd = grants(database, appser, dbserv)
+                    execute(dbserv, cmd)
+
+def main():
+    parser = argparse.ArgumentParser()
+    group = parser.add_mutually_exclusive_group()
+    group_server = parser.add_mutually_exclusive_group()
+
+    group.add_argument("-d", "--dbserver", action='store', nargs='+', help="apply grants to select database server for all APP servers")
+    group.add_argument("-a", "--allDatabase", action='store_true', help="Apply grants to all database server for all APP servers.")
+    parser.add_argument("-e", "--execute", action='store_false', dest='quiet', help="Do not apply but generate the log files.")
+    group_server.add_argument("-f", "--flush", action='store_true', help="flush all grants first")
+    group_server.add_argument("-s", "--appServer", action='store', nargs='+', help="Use with -a or -d. Apply grants for a APP server (on all db's if -a is used or sepcific DB mentioned by -d)")
+    parser.add_argument("-r", "--reverse", action='store_true', help="Use to apply PRIMARY grants to SLAVEs. Used when primary fails and slave takes it place. Should only be used with -d option. For eg: ./Grants.py -d db2 -r -f")
+
+    arg_list = parser.parse_args()
+
+    if len(sys.argv) == 1:
+        parser.print_help()
+        sys.exit(1)
+    else:
+        if arg_list.appServer:
+            if (not arg_list.dbserver and not arg_list.allDatabase):
+                parser.print_help()
+                sys.exit(2)
+            else:
+                if arg_list.allDatabase:
+                    print(arg_list.appServer)
+                    callgrants(dbservers, arg_list.flush, appServers=arg_list.appServer)
+                    sys.exit(3)
+                elif arg_list.dbserver:
+                    print(arg_list.dbserver)
+                    callgrants(arg_list.dbserver, arg_list.flush, arg_list.appServer)
+                    sys.exit(4)
+
+        if arg_list.dbserver:
+            if arg_list.flush:
+                print(arg_list.dbserver)
+                callgrants(arg_list.dbserver, arg_list.flush, arg_list.reverse)
+                sys.exit(5)
+            else :
+                callgrants(arg_list.dbserver, arg_list.reverse)
+                sys.exit(6)
+
+        if arg_list.allDatabase:
+            if arg_list.flush:
+                print(arg_list.dbserver)
+                callgrants(dbservers, arg_list.flush)
+                sys.exit(7)
+            else :
+                callgrants(dbservers)
+                sys.exit(8)
+
+if __name__ == "__main__":
+    main()
