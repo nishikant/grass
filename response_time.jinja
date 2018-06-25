@@ -1,0 +1,87 @@
+<html>
+    <head><title>Response Time Report</title>
+    <style>
+    table, th, td {
+        border: 1px solid black;
+        border-collapse: collapse;
+    }
+    th, td {
+        padding: 5px;
+        text-align: left;
+    }
+    </style>
+    </head>
+    <body>
+<h2>Response Time</h2>
+
+{% set label_header = ["Team","URL"] -%}
+{% set time_header = [] -%}
+{% for team, urls in test.items() -%}
+    {% for url, values in urls.items() -%}
+        {%- if loop.index <= 1 -%}
+            {% do time_header.append(values.keys()|list|sort) -%}
+        {% endif %}
+    {%- endfor %}
+
+{%- endfor %}
+
+<table border="1px" style="float: left;">
+<tr>
+
+{% for header in label_header -%}
+    <th><b>{{ header }}</b></th>
+{%- endfor %}
+
+
+{% for header in time_header[0] -%}
+    <th scope="col" colspan=5><b>{{ header }}</b></th>
+{%- endfor %}
+
+</tr>
+<th scope="row">&nbsp;</th>
+<td>&nbsp;</td>
+<td>Average</td>
+<td>Median</td>
+<td>75th Percentile</td>
+<td>95th Percentile</td>
+<td>Count</td>
+<td>Average</td>
+<td>Median</td>
+<td>75th Percentile</td>
+<td>95th Percentile</td>
+<td>Count</td>
+<td>Inc/Dec in median</td>
+
+
+
+{%- for team, urls in test.items() -%}
+    <tr>
+        <th rowspan="{{urls|length + 1}}"><b>{{ team }} </b></th>
+    {% for url, values in urls.items() -%}
+        <tr>
+            <td>{{url}}</td>
+            {% for header in time_header[0] -%}
+                <td>{{ '%0.3f' % values[header]["avg"]|float }}</td>
+                <td>{{ '%0.3f' % values[header]["50.0"]|float }}</td>
+                <td>{{ '%0.3f' % values[header]["75.0"]|float }}</td>
+                <td>{{ '%0.3f' % values[header]["95.0"]|float }}</td>
+                <td>{{ values[header]["count"] }}</td>
+                {% if values[header]["diff"] -%}
+                    {% if values[header]["diff"]|float < 0 -%}
+                        {% set bgcolor = 'lightgreen'-%}
+                    {% elif values[header]["diff"]|float > 0 -%}
+                        {% set bgcolor = 'red'-%}
+                    {% else -%}
+                        {% set bgcolor = 'white'-%}
+                    {% endif -%}
+                        
+                    <td bgcolor={{bgcolor}}>{{ '%0.3f' % values[header]["diff"]|float }}</td>
+                {% endif -%}
+            {% endfor -%}
+        </tr>
+    {% endfor -%}
+    </tr>
+{% endfor -%}
+</table>
+</body>
+</html>
